@@ -55,10 +55,10 @@ declare module '@illgrenoble/guacamole-common-js' {
          */
         resize(width: number): void;
 
-          /**
-         * Resets the state of this keyboard, releasing all keys, and firing keyup
-         * events for each released key.
-         */
+        /**
+       * Resets the state of this keyboard, releasing all keys, and firing keyup
+       * events for each released key.
+       */
         reset(): void;
     }
 

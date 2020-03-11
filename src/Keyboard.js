@@ -25,15 +25,37 @@ var Guacamole = Guacamole || {};
  * which represent keys as their corresponding X11 keysym.
  * 
  * @constructor
- * @param {Element} element The Element to use to provide keyboard events.
+ * @param {Element|Document} [element]
+ *    The Element to use to provide keyboard events. If omitted, at least one
+ *    Element must be manually provided through the listenTo() function for
+ *    the Guacamole.Keyboard instance to have any effect.
  */
-Guacamole.Keyboard = function(element) {
+Guacamole.Keyboard = function Keyboard(element) {
 
     /**
      * Reference to this Guacamole.Keyboard.
      * @private
      */
     var guac_keyboard = this;
+
+    /**
+     * An integer value which uniquely identifies this Guacamole.Keyboard
+     * instance with respect to other Guacamole.Keyboard instances.
+     *
+     * @private
+     * @type {Number}
+     */
+    var guacKeyboardID = Guacamole.Keyboard._nextID++;
+
+    /**
+     * The name of the property which is added to event objects via markEvent()
+     * to note that they have already been handled by this Guacamole.Keyboard.
+     *
+     * @private
+     * @constant
+     * @type {String}
+     */
+    var EVENT_MARKER = '_GUAC_KEYBOARD_HANDLED_BY_' + guacKeyboardID;
 
     /**
      * Fired whenever the user presses a key with the element associated
@@ -54,6 +76,58 @@ Guacamole.Keyboard = function(element) {
      * @param {Number} keysym The keysym of the key being released.
      */
     this.onkeyup = null;
+
+    /**
+     * Set of known platform-specific or browser-specific quirks which must be
+     * accounted for to properly interpret key events, even if the only way to
+     * reliably detect that quirk is to platform/browser-sniff.
+     *
+     * @private
+     * @type {Object.<String, Boolean>}
+     */
+    var quirks = {
+
+        /**
+         * Whether keyup events are universally unreliable.
+         *
+         * @type {Boolean}
+         */
+        keyupUnreliable: false,
+
+        /**
+         * Whether the Alt key is actually a modifier for typable keys and is
+         * thus never used for keyboard shortcuts.
+         *
+         * @type {Boolean}
+         */
+        altIsTypableOnly: false,
+
+        /**
+         * Whether we can rely on receiving a keyup event for the Caps Lock
+         * key.
+         *
+         * @type {Boolean}
+         */
+        capsLockKeyupUnreliable: false
+
+    };
+
+    // Set quirk flags depending on platform/browser, if such information is
+    // available
+    if (navigator && navigator.platform) {
+
+        // All keyup events are unreliable on iOS (sadly)
+        if (navigator.platform.match(/ipad|iphone|ipod/i))
+            quirks.keyupUnreliable = true;
+
+        // The Alt key on Mac is never used for keyboard shortcuts, and the
+        // Caps Lock key never dispatches keyup events
+        else if (navigator.platform.match(/^mac/i)) {
+            quirks.altIsTypableOnly = true;
+            quirks.capsLockKeyupUnreliable = true;
+        }
+
+    }
 
     /**
      * A key event having a corresponding timestamp. This event is non-specific.
@@ -175,6 +249,14 @@ Guacamole.Keyboard = function(element) {
         this.keysym =  keysym_from_key_identifier(key, location)
                     || keysym_from_keycode(keyCode, location);
 
+        /**
+         * Whether the keyup following this keydown event is known to be
+         * reliable. If false, we cannot rely on the keyup event to occur.
+         *
+         * @type {Boolean}
+         */
+        this.keyupReliable = !quirks.keyupUnreliable;
+
         // DOM3 and keyCode are reliable sources if the corresponding key is
         // not a printable key
         if (this.keysym && !isPrintable(this.keysym))
@@ -184,9 +266,17 @@ Guacamole.Keyboard = function(element) {
         if (!this.keysym && key_identifier_sane(keyCode, keyIdentifier))
             this.keysym = keysym_from_key_identifier(keyIdentifier, location, guac_keyboard.modifiers.shift);
 
+        // If a key is pressed while meta is held down, the keyup will
+        // never be sent in Chrome (bug #108404)
+        if (guac_keyboard.modifiers.meta && this.keysym !== 0xFFE7 && this.keysym !== 0xFFE8)
+            this.keyupReliable = false;
+
+        // We cannot rely on receiving keyup for Caps Lock on certain platforms
+        else if (this.keysym === 0xFFE5 && quirks.capsLockKeyupUnreliable)
+            this.keyupReliable = false;
+
         // Determine whether default action for Alt+combinations must be prevented
-        var prevent_alt =  !guac_keyboard.modifiers.ctrl
-                        && !(navigator && navigator.platform && navigator.platform.match(/^mac/i));
+        var prevent_alt = !guac_keyboard.modifiers.ctrl && !quirks.altIsTypableOnly;
 
         // Determine whether default action for Ctrl+combinations must be prevented
         var prevent_ctrl = !guac_keyboard.modifiers.alt;
@@ -296,9 +386,13 @@ Guacamole.Keyboard = function(element) {
         this.location = location;
 
         // If key is known from keyCode or DOM3 alone, use that
-        this.keysym =  recentKeysym[keyCode]
-                    || keysym_from_keycode(keyCode, location)
+        this.keysym =  keysym_from_keycode(keyCode, location)
                     || keysym_from_key_identifier(key, location); // keyCode is still more reliable for keyup when dead keys are in use
+
+        // Fall back to the most recently pressed keysym associated with the
+        // keyCode if the inferred key doesn't seem to actually be pressed
+        if (!guac_keyboard.pressed[this.keysym])
+            this.keysym = recentKeysym[keyCode] || this.keysym;
 
         // Keyup is as reliable as it will ever be
         this.reliable = true;
@@ -406,22 +500,6 @@ Guacamole.Keyboard = function(element) {
         "Compose": [0xFF20],
         "Control": [0xFFE3, 0xFFE3, 0xFFE4],
         "ContextMenu": [0xFF67],
-        "DeadGrave": [0xFE50],
-        "DeadAcute": [0xFE51],
-        "DeadCircumflex": [0xFE52],
-        "DeadTilde": [0xFE53],
-        "DeadMacron": [0xFE54],
-        "DeadBreve": [0xFE55],
-        "DeadAboveDot": [0xFE56],
-        "DeadUmlaut": [0xFE57],
-        "DeadAboveRing": [0xFE58],
-        "DeadDoubleacute": [0xFE59],
-        "DeadCaron": [0xFE5A],
-        "DeadCedilla": [0xFE5B],
-        "DeadOgonek": [0xFE5C],
-        "DeadIota": [0xFE5D],
-        "DeadVoicedSound": [0xFE5E],
-        "DeadSemivoicedSound": [0xFE5F],
         "Delete": [0xFFFF],
         "Down": [0xFF54],
         "End": [0xFF57],
@@ -487,7 +565,7 @@ Guacamole.Keyboard = function(element) {
         "Pause": [0xFF13],
         "Play": [0xFD16],
         "PreviousCandidate": [0xFF3E],
-        "PrintScreen": [0xFD1D],
+        "PrintScreen": [0xFF61],
         "Redo": [0xFF66],
         "Right": [0xFF53],
         "RomanCharacters": null,
@@ -498,6 +576,11 @@ Guacamole.Keyboard = function(element) {
         "SingleCandidate": [0xFF3C],
         "Super": [0xFFEB, 0xFFEB, 0xFFEC],
         "Tab": [0xFF09],
+        "UIKeyInputDownArrow": [0xFF54],
+        "UIKeyInputEscape": [0xFF1B],
+        "UIKeyInputLeftArrow": [0xFF51],
+        "UIKeyInputRightArrow": [0xFF53],
+        "UIKeyInputUpArrow": [0xFF52],
         "Up": [0xFF52],
         "Undo": [0xFF65],
         "Win": [0xFFEB],
@@ -515,6 +598,7 @@ Guacamole.Keyboard = function(element) {
         0xFFE2: true, // Right shift
         0xFFE3: true, // Left ctrl 
         0xFFE4: true, // Right ctrl 
+        0xFFE5: true, // Caps Lock
         0xFFE7: true, // Left meta 
         0xFFE8: true, // Right meta 
         0xFFE9: true, // Left alt
@@ -534,6 +618,19 @@ Guacamole.Keyboard = function(element) {
      * is not currently pressed, it will not be defined. 
      */
     this.pressed = {};
+
+    /**
+     * The state of every key, indexed by keysym, for strictly those keys whose
+     * status has been indirectly determined thorugh observation of other key
+     * events. If a particular key is implicitly pressed, the value of
+     * implicitlyPressed for that keysym will be true. If a key
+     * is not currently implicitly pressed (the key is not pressed OR the state
+     * of the key is explicitly known), it will not be defined.
+     *
+     * @private
+     * @tyle {Object.<Number, Boolean>}
+     */
+    var implicitlyPressed = {};
 
     /**
      * The last result of calling the onkeydown handler for each key, indexed
@@ -771,6 +868,7 @@ Guacamole.Keyboard = function(element) {
             
             // Mark key as released
             delete guac_keyboard.pressed[keysym];
+            delete implicitlyPressed[keysym];
 
             // Stop repeat
             window.clearTimeout(key_repeat_timeout);
@@ -779,6 +877,30 @@ Guacamole.Keyboard = function(element) {
             // Send key event
             if (keysym !== null && guac_keyboard.onkeyup)
                 guac_keyboard.onkeyup(keysym);
+
+        }
+
+    };
+
+    /**
+     * Presses and releases the keys necessary to type the given string of
+     * text.
+     *
+     * @param {String} str
+     *     The string to type.
+     */
+    this.type = function type(str) {
+
+        // Press/release the key corresponding to each character in the string
+        for (var i = 0; i < str.length; i++) {
+
+            // Determine keysym of current character
+            var codepoint = str.codePointAt ? str.codePointAt(i) : str.charCodeAt(i);
+            var keysym = keysym_from_charcode(codepoint);
+
+            // Press and release key for current character
+            guac_keyboard.press(keysym);
+            guac_keyboard.release(keysym);
 
         }
 
@@ -800,6 +922,71 @@ Guacamole.Keyboard = function(element) {
     };
 
     /**
+     * Given the remote and local state of a particular key, resynchronizes the
+     * remote state of that key with the local state through pressing or
+     * releasing keysyms.
+     *
+     * @private
+     * @param {Boolean} remoteState
+     *     Whether the key is currently pressed remotely.
+     *
+     * @param {Boolean} localState
+     *     Whether the key is currently pressed remotely locally. If the state
+     *     of the key is not known, this may be undefined.
+     *
+     * @param {Number[]} keysyms
+     *     The keysyms which represent the key being updated.
+     *
+     * @param {KeyEvent} keyEvent
+     *     Guacamole's current best interpretation of the key event being
+     *     processed.
+     */
+    var updateModifierState = function updateModifierState(remoteState,
+        localState, keysyms, keyEvent) {
+
+        var i;
+
+        // Do not trust changes in modifier state for events directly involving
+        // that modifier: (1) the flag may erroneously be cleared despite
+        // another version of the same key still being held and (2) the change
+        // in flag may be due to the current event being processed, thus
+        // updating things here is at best redundant and at worst incorrect
+        if (keysyms.indexOf(keyEvent.keysym) !== -1)
+            return;
+
+        // Release all related keys if modifier is implicitly released
+        if (remoteState && localState === false) {
+            for (i = 0; i < keysyms.length; i++) {
+                guac_keyboard.release(keysyms[i]);
+            }
+        }
+
+        // Press if modifier is implicitly pressed
+        else if (!remoteState && localState) {
+
+            // Verify that modifier flag isn't already pressed or already set
+            // due to another version of the same key being held down
+            for (i = 0; i < keysyms.length; i++) {
+                if (guac_keyboard.pressed[keysyms[i]])
+                    return;
+            }
+
+            // Mark as implicitly pressed only if there is other information
+            // within the key event relating to a different key. Some
+            // platforms, such as iOS, will send essentially empty key events
+            // for modifier keys, using only the modifier flags to signal the
+            // identity of the key.
+            var keysym = keysyms[0];
+            if (keyEvent.keysym)
+                implicitlyPressed[keysym] = true;
+
+            guac_keyboard.press(keysym);
+
+        }
+
+    };
+
+    /**
      * Given a keyboard event, updates the local modifier state and remote
      * key state based on the modifier flags within the event. This function
      * pays no attention to keycodes.
@@ -807,45 +994,70 @@ Guacamole.Keyboard = function(element) {
      * @private
      * @param {KeyboardEvent} e
      *     The keyboard event containing the flags to update.
+     *
+     * @param {KeyEvent} keyEvent
+     *     Guacamole's current best interpretation of the key event being
+     *     processed.
      */
-    var update_modifier_state = function update_modifier_state(e) {
+    var syncModifierStates = function syncModifierStates(e, keyEvent) {
 
         // Get state
         var state = Guacamole.Keyboard.ModifierState.fromKeyboardEvent(e);
 
-        // Release alt if implicitly released
-        if (guac_keyboard.modifiers.alt && state.alt === false) {
-            guac_keyboard.release(0xFFE9); // Left alt
-            guac_keyboard.release(0xFFEA); // Right alt
-            guac_keyboard.release(0xFE03); // AltGr
-        }
+        // Resync state of alt
+        updateModifierState(guac_keyboard.modifiers.alt, state.alt, [
+            0xFFE9, // Left alt
+            0xFFEA, // Right alt
+            0xFE03  // AltGr
+        ], keyEvent);
 
-        // Release shift if implicitly released
-        if (guac_keyboard.modifiers.shift && state.shift === false) {
-            guac_keyboard.release(0xFFE1); // Left shift
-            guac_keyboard.release(0xFFE2); // Right shift
-        }
+        // Resync state of shift
+        updateModifierState(guac_keyboard.modifiers.shift, state.shift, [
+            0xFFE1, // Left shift
+            0xFFE2  // Right shift
+        ], keyEvent);
 
-        // Release ctrl if implicitly released
-        if (guac_keyboard.modifiers.ctrl && state.ctrl === false) {
-            guac_keyboard.release(0xFFE3); // Left ctrl 
-            guac_keyboard.release(0xFFE4); // Right ctrl 
-        }
+        // Resync state of ctrl
+        updateModifierState(guac_keyboard.modifiers.ctrl, state.ctrl, [
+            0xFFE3, // Left ctrl
+            0xFFE4  // Right ctrl
+        ], keyEvent);
 
-        // Release meta if implicitly released
-        if (guac_keyboard.modifiers.meta && state.meta === false) {
-            guac_keyboard.release(0xFFE7); // Left meta 
-            guac_keyboard.release(0xFFE8); // Right meta 
-        }
+        // Resync state of meta
+        updateModifierState(guac_keyboard.modifiers.meta, state.meta, [
+            0xFFE7, // Left meta
+            0xFFE8  // Right meta
+        ], keyEvent);
 
-        // Release hyper if implicitly released
-        if (guac_keyboard.modifiers.hyper && state.hyper === false) {
-            guac_keyboard.release(0xFFEB); // Left hyper
-            guac_keyboard.release(0xFFEC); // Right hyper
-        }
+        // Resync state of hyper
+        updateModifierState(guac_keyboard.modifiers.hyper, state.hyper, [
+            0xFFEB, // Left hyper
+            0xFFEC  // Right hyper
+        ], keyEvent);
 
         // Update state
         guac_keyboard.modifiers = state;
+
+    };
+
+    /**
+     * Returns whether all currently pressed keys were implicitly pressed. A
+     * key is implicitly pressed if its status was inferred indirectly from
+     * inspection of other key events.
+     *
+     * @private
+     * @returns {Boolean}
+     *     true if all currently pressed keys were implicitly pressed, false
+     *     otherwise.
+     */
+    var isStateImplicit = function isStateImplicit() {
+
+        for (var keysym in guac_keyboard.pressed) {
+            if (!implicitlyPressed[keysym])
+                return false;
+        }
+
+        return true;
 
     };
 
@@ -871,6 +1083,11 @@ Guacamole.Keyboard = function(element) {
             last_event = handled_event;
             handled_event = interpret_event();
         } while (handled_event !== null);
+
+        // Reset keyboard state if we cannot expect to receive any further
+        // keyup events
+        if (isStateImplicit())
+            guac_keyboard.reset();
 
         return last_event.defaultPrevented;
 
@@ -961,9 +1178,9 @@ Guacamole.Keyboard = function(element) {
                     var defaultPrevented = !guac_keyboard.press(keysym);
                     recentKeysym[first.keyCode] = keysym;
 
-                    // If a key is pressed while meta is held down, the keyup will
-                    // never be sent in Chrome, so send it now. (bug #108404)
-                    if (guac_keyboard.modifiers.meta && keysym !== 0xFFE7 && keysym !== 0xFFE8)
+                    // Release the key now if we cannot rely on the associated
+                    // keyup event
+                    if (!first.keyupReliable)
                         guac_keyboard.release(keysym);
 
                     // Record whether default was prevented
@@ -979,12 +1196,13 @@ Guacamole.Keyboard = function(element) {
         } // end if keydown
 
         // Keyup event
-        else if (first instanceof KeyupEvent) {
+        else if (first instanceof KeyupEvent && !quirks.keyupUnreliable) {
 
             // Release specific key if known
             var keysym = first.keysym;
             if (keysym) {
                 guac_keyboard.release(keysym);
+                delete recentKeysym[first.keyCode];
                 first.defaultPrevented = true;
             }
 
@@ -998,7 +1216,8 @@ Guacamole.Keyboard = function(element) {
 
         } // end if keyup
 
-        // Ignore any other type of event (keypress by itself is invalid)
+        // Ignore any other type of event (keypress by itself is invalid, and
+        // unreliable keyup events should simply be dumped)
         else
             return eventLog.shift();
 
@@ -1036,80 +1255,195 @@ Guacamole.Keyboard = function(element) {
 
     };
 
-    // When key pressed
-    element.addEventListener("keydown", function(e) {
+    /**
+     * Attempts to mark the given Event as having been handled by this
+     * Guacamole.Keyboard. If the Event has already been marked as handled,
+     * false is returned.
+     *
+     * @param {Event} e
+     *     The Event to mark.
+     *
+     * @returns {Boolean}
+     *     true if the given Event was successfully marked, false if the given
+     *     Event was already marked.
+     */
+    var markEvent = function markEvent(e) {
 
-        // Only intercept if handler set
-        if (!guac_keyboard.onkeydown) return;
+        // Fail if event is already marked
+        if (e[EVENT_MARKER])
+            return false;
 
-        var keyCode;
-        if (window.event) keyCode = window.event.keyCode;
-        else if (e.which) keyCode = e.which;
+        // Mark event otherwise
+        e[EVENT_MARKER] = true;
+        return true;
 
-        // Fix modifier states
-        update_modifier_state(e);
+    };
 
-        // Ignore (but do not prevent) the "composition" keycode sent by some
-        // browsers when an IME is in use (see: http://lists.w3.org/Archives/Public/www-dom/2010JulSep/att-0182/keyCode-spec.html)
-        if (keyCode === 229)
-            return;
+    /**
+     * Attaches event listeners to the given Element, automatically translating
+     * received key, input, and composition events into simple keydown/keyup
+     * events signalled through this Guacamole.Keyboard's onkeydown and
+     * onkeyup handlers.
+     *
+     * @param {Element|Document} element
+     *     The Element to attach event listeners to for the sake of handling
+     *     key or input events.
+     */
+    this.listenTo = function listenTo(element) {
 
-        // Log event
-        var keydownEvent = new KeydownEvent(keyCode, e.keyIdentifier, e.key, getEventLocation(e));
-        eventLog.push(keydownEvent);
+        // When key pressed
+        element.addEventListener("keydown", function(e) {
 
-        // Interpret as many events as possible, prevent default if indicated
-        if (interpret_events())
+            // Only intercept if handler set
+            if (!guac_keyboard.onkeydown) return;
+
+            // Ignore events which have already been handled
+            if (!markEvent(e)) return;
+
+            var keyCode;
+            if (window.event) keyCode = window.event.keyCode;
+            else if (e.which) keyCode = e.which;
+
+            // Fix modifier states
+            var keydownEvent = new KeydownEvent(keyCode, e.keyIdentifier, e.key, getEventLocation(e));
+            syncModifierStates(e, keydownEvent);
+
+            // Ignore (but do not prevent) the "composition" keycode sent by some
+            // browsers when an IME is in use (see: http://lists.w3.org/Archives/Public/www-dom/2010JulSep/att-0182/keyCode-spec.html)
+            if (keyCode === 229)
+                return;
+
+            // Log event
+            eventLog.push(keydownEvent);
+
+            // Interpret as many events as possible, prevent default if indicated
+            if (interpret_events())
+                e.preventDefault();
+
+        }, true);
+
+        // When key pressed
+        element.addEventListener("keypress", function(e) {
+
+            // Only intercept if handler set
+            if (!guac_keyboard.onkeydown && !guac_keyboard.onkeyup) return;
+
+            // Ignore events which have already been handled
+            if (!markEvent(e)) return;
+
+            var charCode;
+            if (window.event) charCode = window.event.keyCode;
+            else if (e.which) charCode = e.which;
+
+            // Fix modifier states
+            var keypressEvent = new KeypressEvent(charCode);
+            syncModifierStates(e, keypressEvent);
+
+            // Log event
+            eventLog.push(keypressEvent);
+
+            // Interpret as many events as possible, prevent default if indicated
+            if (interpret_events())
+                e.preventDefault();
+
+        }, true);
+
+        // When key released
+        element.addEventListener("keyup", function(e) {
+
+            // Only intercept if handler set
+            if (!guac_keyboard.onkeyup) return;
+
+            // Ignore events which have already been handled
+            if (!markEvent(e)) return;
+
             e.preventDefault();
 
-    }, true);
+            var keyCode;
+            if (window.event) keyCode = window.event.keyCode;
+            else if (e.which) keyCode = e.which;
 
-    // When key pressed
-    element.addEventListener("keypress", function(e) {
+            // Fix modifier states
+            var keyupEvent = new KeyupEvent(keyCode, e.keyIdentifier, e.key, getEventLocation(e));
+            syncModifierStates(e, keyupEvent);
 
-        // Only intercept if handler set
-        if (!guac_keyboard.onkeydown && !guac_keyboard.onkeyup) return;
+            // Log event, call for interpretation
+            eventLog.push(keyupEvent);
+            interpret_events();
 
-        var charCode;
-        if (window.event) charCode = window.event.keyCode;
-        else if (e.which) charCode = e.which;
+        }, true);
 
-        // Fix modifier states
-        update_modifier_state(e);
+        /**
+         * Handles the given "input" event, typing the data within the input text.
+         * If the event is complete (text is provided), handling of "compositionend"
+         * events is suspended, as such events may conflict with input events.
+         *
+         * @private
+         * @param {InputEvent} e
+         *     The "input" event to handle.
+         */
+        var handleInput = function handleInput(e) {
 
-        // Log event
-        var keypressEvent = new KeypressEvent(charCode);
-        eventLog.push(keypressEvent);
+            // Only intercept if handler set
+            if (!guac_keyboard.onkeydown && !guac_keyboard.onkeyup) return;
 
-        // Interpret as many events as possible, prevent default if indicated
-        if (interpret_events())
-            e.preventDefault();
+            // Ignore events which have already been handled
+            if (!markEvent(e)) return;
 
-    }, true);
+            // Type all content written
+            if (e.data && !e.isComposing) {
+                element.removeEventListener("compositionend", handleComposition, false);
+                guac_keyboard.type(e.data);
+            }
 
-    // When key released
-    element.addEventListener("keyup", function(e) {
+        };
 
-        // Only intercept if handler set
-        if (!guac_keyboard.onkeyup) return;
+        /**
+         * Handles the given "compositionend" event, typing the data within the
+         * composed text. If the event is complete (composed text is provided),
+         * handling of "input" events is suspended, as such events may conflict
+         * with composition events.
+         *
+         * @private
+         * @param {CompositionEvent} e
+         *     The "compositionend" event to handle.
+         */
+        var handleComposition = function handleComposition(e) {
 
-        e.preventDefault();
+            // Only intercept if handler set
+            if (!guac_keyboard.onkeydown && !guac_keyboard.onkeyup) return;
 
-        var keyCode;
-        if (window.event) keyCode = window.event.keyCode;
-        else if (e.which) keyCode = e.which;
-        
-        // Fix modifier states
-        update_modifier_state(e);
+            // Ignore events which have already been handled
+            if (!markEvent(e)) return;
 
-        // Log event, call for interpretation
-        var keyupEvent = new KeyupEvent(keyCode, e.keyIdentifier, e.key, getEventLocation(e));
-        eventLog.push(keyupEvent);
-        interpret_events();
+            // Type all content written
+            if (e.data) {
+                element.removeEventListener("input", handleInput, false);
+                guac_keyboard.type(e.data);
+            }
 
-    }, true);
+        };
+
+        // Automatically type text entered into the wrapped field
+        element.addEventListener("input", handleInput, false);
+        element.addEventListener("compositionend", handleComposition, false);
+
+    };
+
+    // Listen to given element, if any
+    if (element)
+        guac_keyboard.listenTo(element);
 
 };
+
+/**
+ * The unique numerical identifier to assign to the next Guacamole.Keyboard
+ * instance.
+ *
+ * @private
+ * @type {Number}
+ */
+Guacamole.Keyboard._nextID = 0;
 
 /**
  * The state of all supported keyboard modifiers.
