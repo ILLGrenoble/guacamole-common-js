@@ -13363,7 +13363,7 @@ Guacamole.StaticHTTPTunnel = function StaticHTTPTunnel(url, crossDomain, extraTu
 
 Guacamole.StaticHTTPTunnel.prototype = new Guacamole.Tunnel();
 
-**
+/**
  * Guacamole Tunnel implemented over SocketIO
  * 
  * @constructor
