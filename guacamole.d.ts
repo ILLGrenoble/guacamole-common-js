@@ -2620,7 +2620,7 @@ declare module '@illgrenoble/guacamole-common-js' {
         /**
          * @param stream @param {Guacamole.OutputStream} stream The stream that data will be written to.
          */
-        constructor(stream: InputStream);
+        constructor(stream: OutputStream);
 
         /**
          * Sends the given text.
